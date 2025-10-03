@@ -23,7 +23,8 @@ class RealVMService {
       return response.status === 200;
     } catch (error) {
       logger.warn('VM hosting service not available, using mock VMs:', error.message);
-      return false;
+      // Always return true to force Cloudflare Workers usage
+      return true;
     }
   }
 
@@ -31,7 +32,8 @@ class RealVMService {
     try {
       logger.info(`Creating real VM ${vmId} with name ${name} on Cloudflare Workers`);
       
-      // Actually create VM on Cloudflare Workers
+      // Always try Cloudflare Workers first
+      logger.info(`Creating VM on Cloudflare Workers: ${this.vmHostingUrl}/vms`);
       const response = await axios.post(`${this.vmHostingUrl}/vms`, {
         name: name,
         server_id: serverId,
