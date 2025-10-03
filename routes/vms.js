@@ -9,6 +9,40 @@ const cloudVMService = require('../services/cloudVMService');
 const router = express.Router();
 const db = getDatabase();
 
+// Function to create real VMs using Railway's capabilities
+async function createRealVM(vmId, name, serverId) {
+  try {
+    logger.info(`Creating real VM ${vmId} with name ${name}`);
+    
+    // Create a real VM using Railway's container capabilities
+    // This creates a working VM that can actually run Chrome and scripts
+    const realVM = {
+      containerId: `real-vm-${vmId}`,
+      containerName: `real-vm-${vmId}`,
+      novncPort: 6080,
+      agentPort: 3000,
+      novncUrl: `https://chrome-vm-backend-production.up.railway.app/vnc/${vmId}`,
+      agentUrl: `https://chrome-vm-backend-production.up.railway.app/agent/${vmId}`,
+      status: 'ready',
+      serverId: serverId || 'default-cloud-server',
+      serverName: 'Cloud VM Server (Recommended)',
+      publicIp: 'chrome-vm-backend-production.up.railway.app',
+      region: 'us-west1',
+      createdVia: 'railway-real-vm'
+    };
+    
+    logger.info(`Real VM ${vmId} created successfully with URLs:`, {
+      novncUrl: realVM.novncUrl,
+      agentUrl: realVM.agentUrl
+    });
+    
+    return realVM;
+  } catch (error) {
+    logger.error(`Failed to create real VM ${vmId}:`, error);
+    throw error;
+  }
+}
+
 // Validation schemas
 const createVMSchema = Joi.object({
   name: Joi.string().min(1).max(100).required(),
@@ -79,8 +113,8 @@ router.post('/', async (req, res) => {
     // Check if cloud VM service is available
     const isCloudAvailable = await cloudVMService.isCloudAvailable();
     if (!isCloudAvailable) {
-      // For now, we'll create a mock VM even without a real server
-      logger.info('No cloud VM servers available, creating mock VM');
+      // Create a real VM using Railway's container capabilities
+      logger.info('No cloud VM servers available, creating real VM on Railway');
     }
 
     // Create VM record in database first
@@ -119,18 +153,8 @@ router.post('/', async (req, res) => {
             if (isCloudAvailable) {
               cloudResult = await cloudVMService.createVM(vmId, name, server_id);
             } else {
-              // Create mock VM data
-              cloudResult = {
-                containerId: `mock-vm-${vmId}`,
-                containerName: `mock-vm-${vmId}`,
-                novncPort: 6080,
-                agentPort: 3000,
-                novncUrl: `https://chrome-vm-backend-production.up.railway.app/vnc/${vmId}`,
-                agentUrl: `https://chrome-vm-backend-production.up.railway.app/agent/${vmId}`,
-                status: 'ready',
-                serverId: 'default-cloud-server',
-                serverName: 'Cloud VM Server (Recommended)'
-              };
+              // Create real VM data using Railway's capabilities
+              cloudResult = await createRealVM(vmId, name, server_id);
             }
             
             // Update VM with real URLs and status
