@@ -153,7 +153,7 @@ router.post('/', async (req, res) => {
             logger.info(`Creating real VM ${vmId}...`);
             
             // Use real VM service to create actual VM
-            const cloudResult = await realVMService.createVM(vmId, name, server_id);
+            const cloudResult = await realVMService.createVM(vmId, name, server_id, instanceType);
             
             // Update VM with real URLs and status
             const updatedVM = {

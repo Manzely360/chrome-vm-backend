@@ -27,7 +27,7 @@ class RealVMService {
     }
   }
 
-  async createVM(vmId, name, serverId) {
+  async createVM(vmId, name, serverId, instanceType = 't3.medium') {
     try {
       logger.info(`Creating real VM ${vmId} with name ${name} on Cloudflare Workers`);
       
@@ -36,7 +36,7 @@ class RealVMService {
       const response = await axios.post(`${this.vmHostingUrl}/vms`, {
         name: name,
         server_id: serverId,
-        instanceType: 'standard'
+        instanceType: instanceType
       }, {
         timeout: 30000,
         headers: {
