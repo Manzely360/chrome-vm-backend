@@ -34,6 +34,7 @@ class RealVMService {
       }
 
       // Create VM via Cloudflare Workers
+      logger.info(`Creating VM on Cloudflare Workers: ${this.vmHostingUrl}/vms`);
       const response = await axios.post(`${this.vmHostingUrl}/vms`, {
         name: name,
         server_id: serverId,
@@ -44,6 +45,8 @@ class RealVMService {
           'Content-Type': 'application/json'
         }
       });
+      
+      logger.info(`Cloudflare Workers response: ${response.status} ${response.statusText}`);
 
       if (response.status === 201) {
         const vmData = response.data;
