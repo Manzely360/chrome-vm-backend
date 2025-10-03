@@ -29,34 +29,61 @@ class RealVMService {
 
   async createVM(vmId, name, serverId, instanceType = 't3.medium') {
     try {
-      logger.info(`Creating real VM ${vmId} with name ${name} - WORKING SOLUTION`);
+      logger.info(`Creating real VM ${vmId} with name ${name} on Cloudflare Workers`);
       
-      // Create a working VM that actually works with a real NoVNC URL
-      const realVM = {
-        containerId: `working-vm-${vmId}`,
-        containerName: `working-vm-${vmId}`,
-        novncPort: 6080,
-        agentPort: 3000,
-        novncUrl: `https://chrome-vm-workers.mgmt-5e1.workers.dev/vms/working-vm-${vmId}/novnc`,
-        agentUrl: `https://chrome-vm-workers.mgmt-5e1.workers.dev/vms/working-vm-${vmId}/agent`,
-        status: 'ready',
-        serverId: serverId || 'default-cloud-server',
-        serverName: 'Working VM Server (100% Functional)',
-        publicIp: 'working-vm-ip',
-        region: 'global',
-        createdVia: 'working-vm-service',
-        vmId: vmId
-      };
+      // Actually create VM on Cloudflare Workers
+      const response = await axios.post(`${this.vmHostingUrl}/vms`, {
+        name: name,
+        server_id: serverId,
+        instanceType: instanceType
+      }, {
+        timeout: 30000,
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'Chrome-VM-Dashboard/1.0'
+        }
+      });
+      
+      logger.info(`Cloudflare Workers response: ${response.status} ${response.statusText}`);
+      logger.info(`Response data: ${JSON.stringify(response.data)}`);
 
-      this.runningVMs.set(vmId, realVM);
-      logger.info(`✅ VM ${vmId} created successfully - WORKING!`);
-      logger.info(`NoVNC URL: ${realVM.novncUrl}, Agent URL: ${realVM.agentUrl}`);
+      if (response.status === 201) {
+        const vmData = response.data;
+        
+        // Store VM info
+        const realVM = {
+          containerId: vmData.vmId,
+          containerName: `chrome-vm-${vmId}`,
+          novncPort: 6080,
+          agentPort: 3000,
+          novncUrl: `${this.vmHostingUrl}/vms/${vmData.vmId}/novnc`,
+          agentUrl: `${this.vmHostingUrl}/vms/${vmData.vmId}/agent`,
+          status: vmData.status,
+          serverId: serverId || 'default-cloud-server',
+          serverName: 'Cloudflare Workers VM Hosting',
+          publicIp: 'cloudflare-workers-ip',
+          region: 'cloudflare-global',
+          createdVia: 'cloudflare-workers',
+          vmId: vmData.vmId
+        };
 
-      return realVM;
+        this.runningVMs.set(vmId, realVM);
+        logger.info(`✅ VM ${vmId} created successfully on Cloudflare Workers`);
+        logger.info(`NoVNC URL: ${realVM.novncUrl}, Agent URL: ${realVM.agentUrl}`);
+
+        return realVM;
+      } else {
+        throw new Error(`Failed to create VM: ${response.status} ${response.statusText}`);
+      }
 
     } catch (error) {
-      logger.error(`Failed to create VM ${vmId}:`, error);
-      // Fallback to mock VM if anything fails
+      logger.error(`Failed to create VM ${vmId} on Cloudflare Workers:`, error);
+      logger.error(`Error details: ${error.message}`);
+      if (error.response) {
+        logger.error(`Response status: ${error.response.status}`);
+        logger.error(`Response data: ${JSON.stringify(error.response.data)}`);
+      }
+      // Fallback to mock VM if Cloudflare Workers fails
       return await this.createMockVM(vmId, name, serverId, error.message);
     }
   }
