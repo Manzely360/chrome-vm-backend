@@ -6,6 +6,7 @@ const { getDatabase } = require('../database/init');
 const logger = require('../utils/logger');
 const cloudVMService = require('../services/cloudVMService');
 const realVMService = require('../services/realVMService');
+const googleCloudVMService = require('../services/googleCloudVMService');
 
 const router = express.Router();
 const db = getDatabase();
@@ -152,8 +153,14 @@ router.post('/', async (req, res) => {
           try {
             logger.info(`Creating real VM ${vmId}...`);
             
-            // Use real VM service to create actual VM
-            const cloudResult = await realVMService.createVM(vmId, name, server_id, instanceType);
+            // Use appropriate VM service based on server ID
+            let cloudResult;
+            if (server_id === 'default-google-cloud-server') {
+              cloudResult = await googleCloudVMService.createVM(vmId, name, server_id, instanceType);
+            } else {
+              // Default to Cloudflare Workers for other servers
+              cloudResult = await realVMService.createVM(vmId, name, server_id, instanceType);
+            }
             
             // Update VM with real URLs and status
             const updatedVM = {
