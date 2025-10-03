@@ -7,6 +7,7 @@ const logger = require('../utils/logger');
 const cloudVMService = require('../services/cloudVMService');
 const realVMService = require('../services/realVMService');
 const googleCloudVMService = require('../services/googleCloudVMService');
+const railwayVMService = require('../services/railwayVMService');
 
 const router = express.Router();
 const db = getDatabase();
@@ -157,6 +158,8 @@ router.post('/', async (req, res) => {
             let cloudResult;
             if (server_id === 'default-google-cloud-server') {
               cloudResult = await googleCloudVMService.createVM(vmId, name, server_id, instanceType);
+            } else if (server_id === 'default-railway-server') {
+              cloudResult = await railwayVMService.createVM(vmId, name, server_id, instanceType);
             } else {
               // Default to Cloudflare Workers for other servers
               cloudResult = await realVMService.createVM(vmId, name, server_id, instanceType);
