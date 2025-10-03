@@ -117,8 +117,8 @@ router.post('/', async (req, res) => {
     const { name, instanceType, server_id } = value;
     const vmId = uuidv4();
 
-    // Use real VM service to create actual VMs
-    logger.info('Creating real VM using realVMService');
+    // Use Cloudflare Workers VM hosting service
+    logger.info('Creating real VM using Cloudflare Workers VM hosting');
 
     // Create VM record in database first
     const vm = {
@@ -127,7 +127,7 @@ router.post('/', async (req, res) => {
       status: 'initializing',
       novnc_url: null, // Will be set after Docker container creation
       agent_url: null, // Will be set after Docker container creation
-      public_ip: 'localhost',
+      public_ip: 'cloudflare-workers-ip',
       chrome_version: null,
       node_version: null,
       created_at: new Date().toISOString(),
@@ -178,9 +178,9 @@ router.post('/', async (req, res) => {
               );
             });
 
-            logger.info(`✅ VM ${vmId} created successfully on cloud server ${cloudResult.serverName}`);
+            logger.info(`✅ VM ${vmId} created successfully on Cloudflare Workers (${cloudResult.serverName})`);
           } catch (error) {
-            logger.error(`Error creating cloud VM ${vmId}:`, error);
+            logger.error(`Error creating Cloudflare Workers VM ${vmId}:`, error);
             
             // Mark VM as error
             await new Promise((resolve, reject) => {
