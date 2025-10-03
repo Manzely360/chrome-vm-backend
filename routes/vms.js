@@ -51,8 +51,15 @@ const createVMSchema = Joi.object({
   name: Joi.string().min(1).max(100).required(),
   instanceType: Joi.string().valid('t3.medium', 't3.large', 't3.xlarge', 't3.2xlarge').required(),
   server_id: Joi.string().required().custom((value, helpers) => {
-    // Allow UUIDs or our default server ID
-    if (value === 'default-cloud-server' || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+    // Allow UUIDs or our default server IDs for QuickDeploy
+    const allowedServerIds = [
+      'default-cloud-server',
+      'default-cloudflare-server', 
+      'default-google-cloud-server',
+      'default-railway-server'
+    ];
+    
+    if (allowedServerIds.includes(value) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
       return value;
     }
     return helpers.error('any.invalid');
