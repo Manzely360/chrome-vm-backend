@@ -19,10 +19,16 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'https://chrome-vm-frontend.vercel.app',
+    'https://chrome-vm-frontend-git-main-manzely360-apps.vercel.app',
+    'https://chrome-vm-frontend-res9taifj-manzely360-apps.vercel.app',
     'https://chrome-vm-frontend-1twfmig1s-manzely360-apps.vercel.app',
+    'https://chrome-vm-frontend-2wndwrvgd-manzely360-apps.vercel.app',
+    'https://chrome-vm-frontend-3kqvf3fkm-manzely360-apps.vercel.app',
     process.env.FRONTEND_URL
   ].filter(Boolean),
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 app.use(morgan('combined'));
 app.use(express.json({ limit: '50mb' }));
