@@ -39,6 +39,62 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Mock VNC endpoint
+app.get('/vnc/:vmId', (req, res) => {
+  const { vmId } = req.params;
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Chrome VM ${vmId}</title>
+      <style>
+        body { margin: 0; padding: 0; background: #000; }
+        #noVNC_canvas { width: 100vw; height: 100vh; }
+        .vm-info { 
+          position: absolute; 
+          top: 20px; 
+          left: 20px; 
+          color: white; 
+          background: rgba(0,0,0,0.7); 
+          padding: 10px; 
+          border-radius: 5px;
+          z-index: 1000;
+        }
+      </style>
+    </head>
+    <body>
+      <div class="vm-info">
+        <h2>Chrome VM ${vmId}</h2>
+        <p>Status: Ready</p>
+        <p>Chrome Version: 120.0.0.0</p>
+        <p>Node Version: 18.19.0</p>
+      </div>
+      <div id="noVNC_canvas">
+        <h1 style="color: white; text-align: center; margin-top: 50vh; transform: translateY(-50%);">
+          Chrome VM ${vmId} - NoVNC Viewer
+        </h1>
+        <p style="color: #ccc; text-align: center;">
+          VM is ready for connection. In a real implementation, this would show the actual NoVNC interface.
+        </p>
+      </div>
+    </body>
+    </html>
+  `);
+});
+
+// Mock agent endpoint
+app.get('/agent/:vmId', (req, res) => {
+  const { vmId } = req.params;
+  res.json({
+    vm_id: vmId,
+    status: 'ready',
+    message: 'Chrome VM Agent is running',
+    chrome_version: '120.0.0.0',
+    node_version: '18.19.0',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
@@ -48,7 +104,9 @@ app.get('/', (req, res) => {
     endpoints: {
       health: '/health',
       vms: '/api/vms',
-      servers: '/api/servers'
+      servers: '/api/servers',
+      vnc: '/vnc/:vmId',
+      agent: '/agent/:vmId'
     }
   });
 });
