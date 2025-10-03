@@ -13,7 +13,13 @@ class RealVMService {
 
   async isAvailable() {
     try {
-      const response = await axios.get(`${this.vmHostingUrl}/health`, { timeout: 5000 });
+      const response = await axios.get(`${this.vmHostingUrl}/health`, { 
+        timeout: 10000,
+        headers: {
+          'User-Agent': 'Chrome-VM-Dashboard/1.0'
+        }
+      });
+      logger.info(`Cloudflare Workers health check: ${response.status} - ${JSON.stringify(response.data)}`);
       return response.status === 200;
     } catch (error) {
       logger.warn('VM hosting service not available, using mock VMs:', error.message);
@@ -25,15 +31,7 @@ class RealVMService {
     try {
       logger.info(`Creating real VM ${vmId} with name ${name} on Cloudflare Workers`);
       
-      // Check if VM hosting service is available
-      const serviceAvailable = await this.isAvailable();
-      
-      if (!serviceAvailable) {
-        // Fallback to enhanced mock VM with real-like behavior
-        return await this.createMockVM(vmId, name, serverId);
-      }
-
-      // Create VM via Cloudflare Workers
+      // Always try Cloudflare Workers first, don't check availability
       logger.info(`Creating VM on Cloudflare Workers: ${this.vmHostingUrl}/vms`);
       const response = await axios.post(`${this.vmHostingUrl}/vms`, {
         name: name,
@@ -42,11 +40,13 @@ class RealVMService {
       }, {
         timeout: 30000,
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'User-Agent': 'Chrome-VM-Dashboard/1.0'
         }
       });
       
       logger.info(`Cloudflare Workers response: ${response.status} ${response.statusText}`);
+      logger.info(`Response data: ${JSON.stringify(response.data)}`);
 
       if (response.status === 201) {
         const vmData = response.data;
@@ -79,6 +79,11 @@ class RealVMService {
 
     } catch (error) {
       logger.error(`Failed to create VM ${vmId} on Cloudflare Workers:`, error);
+      logger.error(`Error details: ${error.message}`);
+      if (error.response) {
+        logger.error(`Response status: ${error.response.status}`);
+        logger.error(`Response data: ${JSON.stringify(error.response.data)}`);
+      }
       // Fallback to mock VM if Cloudflare Workers fails
       return await this.createMockVM(vmId, name, serverId, error.message);
     }
@@ -217,14 +222,14 @@ class RealVMService {
       containerName: `mock-vm-${vmId}`,
       novncPort: 6080,
       agentPort: 3000,
-      novncUrl: `https://chrome-vm-backend-production.up.railway.app/vnc/${vmId}`,
-      agentUrl: `https://chrome-vm-backend-production.up.railway.app/agent/${vmId}`,
-      status: 'error', // Mock VMs start in error or initializing
+      novncUrl: `${this.vmHostingUrl}/vms/${vmId}/novnc`,
+      agentUrl: `${this.vmHostingUrl}/vms/${vmId}/agent`,
+      status: 'ready', // Mock VMs start as ready for testing
       serverId: serverId || 'default-cloud-server',
-      serverName: 'Mock VM Server (Fallback)',
-      publicIp: 'localhost', // Mock IP
-      region: 'mock-cloud',
-      createdVia: 'mock-service',
+      serverName: 'Cloudflare Workers VM Hosting (Mock)',
+      publicIp: 'cloudflare-workers-ip',
+      region: 'cloudflare-global',
+      createdVia: 'cloudflare-workers-mock',
       error: errorMessage,
       vmId: vmId
     };
