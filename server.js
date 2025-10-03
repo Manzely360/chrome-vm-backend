@@ -16,7 +16,12 @@ const PORT = process.env.PORT || 3001;
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: [
+    'http://localhost:3000',
+    'https://chrome-vm-frontend.vercel.app',
+    'https://chrome-vm-frontend-1twfmig1s-manzely360-apps.vercel.app',
+    process.env.FRONTEND_URL
+  ].filter(Boolean),
   credentials: true
 }));
 app.use(morgan('combined'));
