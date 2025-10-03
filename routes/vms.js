@@ -5,6 +5,7 @@ const Joi = require('joi');
 const { getDatabase } = require('../database/init');
 const logger = require('../utils/logger');
 const cloudVMService = require('../services/cloudVMService');
+const realVMService = require('../services/realVMService');
 
 const router = express.Router();
 const db = getDatabase();
@@ -116,12 +117,8 @@ router.post('/', async (req, res) => {
     const { name, instanceType, server_id } = value;
     const vmId = uuidv4();
 
-    // Check if cloud VM service is available
-    const isCloudAvailable = await cloudVMService.isCloudAvailable();
-    if (!isCloudAvailable) {
-      // Create a real VM using Railway's container capabilities
-      logger.info('No cloud VM servers available, creating real VM on Railway');
-    }
+    // Use real VM service to create actual VMs
+    logger.info('Creating real VM using realVMService');
 
     // Create VM record in database first
     const vm = {
@@ -150,25 +147,21 @@ router.post('/', async (req, res) => {
       );
     });
 
-        // Create cloud VM asynchronously
+        // Create real VM asynchronously
         setImmediate(async () => {
           try {
-            logger.info(`Creating cloud VM ${vmId}...`);
+            logger.info(`Creating real VM ${vmId}...`);
             
-            let cloudResult;
-            if (isCloudAvailable) {
-              cloudResult = await cloudVMService.createVM(vmId, name, server_id);
-            } else {
-              // Create real VM data using Railway's capabilities
-              cloudResult = await createRealVM(vmId, name, server_id);
-            }
+            // Use real VM service to create actual VM
+            const cloudResult = await realVMService.createVM(vmId, name, server_id);
             
             // Update VM with real URLs and status
             const updatedVM = {
               ...vm,
-              status: 'ready',
+              status: cloudResult.status,
               novnc_url: cloudResult.novncUrl,
               agent_url: cloudResult.agentUrl,
+              public_ip: cloudResult.publicIp,
               chrome_version: '120.0.0.0',
               node_version: '18.19.0',
               last_activity: new Date().toISOString()
@@ -176,8 +169,8 @@ router.post('/', async (req, res) => {
 
             await new Promise((resolve, reject) => {
               db.run(
-                'UPDATE vms SET status = ?, novnc_url = ?, agent_url = ?, chrome_version = ?, node_version = ?, last_activity = ? WHERE id = ?',
-                [updatedVM.status, updatedVM.novnc_url, updatedVM.agent_url, updatedVM.chrome_version, updatedVM.node_version, updatedVM.last_activity, vmId],
+                'UPDATE vms SET status = ?, novnc_url = ?, agent_url = ?, public_ip = ?, chrome_version = ?, node_version = ?, last_activity = ? WHERE id = ?',
+                [updatedVM.status, updatedVM.novnc_url, updatedVM.agent_url, updatedVM.public_ip, updatedVM.chrome_version, updatedVM.node_version, updatedVM.last_activity, vmId],
                 function(err) {
                   if (err) reject(err);
                   else resolve();
