@@ -1,552 +1,171 @@
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
 const axios = require('axios');
-const Joi = require('joi');
-const { getDatabase } = require('../database/init');
 const logger = require('../utils/logger');
-const cloudVMService = require('../services/cloudVMService');
-const realVMService = require('../services/realVMService');
-const googleCloudVMService = require('../services/googleCloudVMService');
-const railwayVMService = require('../services/railwayVMService');
 
 const router = express.Router();
-const db = getDatabase();
 
-// Function to create real VMs using Railway's capabilities
-async function createRealVM(vmId, name, serverId) {
-  try {
-    logger.info(`Creating real VM ${vmId} with name ${name}`);
-    
-    // Create a real VM using Railway's container capabilities
-    // This creates a working VM that can actually run Chrome and scripts
-    const realVM = {
-      containerId: `real-vm-${vmId}`,
-      containerName: `real-vm-${vmId}`,
-      novncPort: 6080,
-      agentPort: 3000,
-      novncUrl: `https://chrome-vm-backend-production.up.railway.app/vnc/${vmId}`,
-      agentUrl: `https://chrome-vm-backend-production.up.railway.app/agent/${vmId}`,
-      status: 'ready',
-      serverId: serverId || 'default-cloud-server',
-      serverName: 'Cloud VM Server (Recommended)',
-      publicIp: 'chrome-vm-backend-production.up.railway.app',
-      region: 'us-west1',
-      createdVia: 'railway-real-vm'
-    };
-    
-    logger.info(`Real VM ${vmId} created successfully with URLs:`, {
-      novncUrl: realVM.novncUrl,
-      agentUrl: realVM.agentUrl
-    });
-    
-    return realVM;
-  } catch (error) {
-    logger.error(`Failed to create real VM ${vmId}:`, error);
-    throw error;
-  }
-}
+// Cloudflare Workers URL for VM management
+const CLOUDFLARE_WORKERS_URL = process.env.CLOUDFLARE_WORKERS_URL || 'https://chrome-vm-workers.mgmt-5e1.workers.dev';
 
-// Validation schemas
-const createVMSchema = Joi.object({
-  name: Joi.string().min(1).max(100).required(),
-  instanceType: Joi.string().valid('t3.medium', 't3.large', 't3.xlarge', 't3.2xlarge').required(),
-  server_id: Joi.string().required().custom((value, helpers) => {
-    // Allow UUIDs or our default server IDs for QuickDeploy
-    const allowedServerIds = [
-      'default-cloud-server',
-      'default-cloudflare-server', 
-      'default-google-cloud-server',
-      'default-railway-server'
-    ];
-    
-    if (allowedServerIds.includes(value) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
-      return value;
-    }
-    return helpers.error('any.invalid');
-  })
-});
-
-const updateVMSchema = Joi.object({
-  name: Joi.string().min(1).max(100),
-  status: Joi.string().valid('ready', 'initializing', 'error', 'running'),
-  novnc_url: Joi.string().uri().allow(null),
-  agent_url: Joi.string().uri().allow(null),
-  chrome_version: Joi.string().allow(null),
-  node_version: Joi.string().allow(null)
-});
-
-// Get all VMs
+// Get all VMs - proxy to Cloudflare Workers
 router.get('/', async (req, res) => {
   try {
-    const vms = await new Promise((resolve, reject) => {
-      db.all('SELECT * FROM vms ORDER BY created_at DESC', (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-
-    res.json(vms);
+    logger.info('Fetching VMs from Cloudflare Workers');
+    const response = await axios.get(`${CLOUDFLARE_WORKERS_URL}/vms`);
+    res.json(response.data.vms || []);
   } catch (error) {
-    logger.error('Error fetching VMs:', error);
+    logger.error('Error fetching VMs from Cloudflare Workers:', error);
     res.status(500).json({ error: 'Failed to fetch VMs' });
   }
 });
 
-// Get VM by ID
-router.get('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    
-    const vm = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM vms WHERE id = ?', [id], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    if (!vm) {
-      return res.status(404).json({ error: 'VM not found' });
-    }
-
-    res.json(vm);
-  } catch (error) {
-    logger.error('Error fetching VM:', error);
-    res.status(500).json({ error: 'Failed to fetch VM' });
-  }
-});
-
-// Create new VM
+// Create VM - proxy to Cloudflare Workers
 router.post('/', async (req, res) => {
   try {
-    const { error, value } = createVMSchema.validate(req.body);
-    if (error) {
-      return res.status(400).json({ error: error.details[0].message });
-    }
-
-    const { name, instanceType, server_id } = value;
-    const vmId = uuidv4();
-
-    // Use Cloudflare Workers VM hosting service
-    logger.info('Creating real VM using Cloudflare Workers VM hosting');
-
-    // Create VM record in database first
-    const vm = {
-      id: vmId,
-      name,
-      status: 'initializing',
-      novnc_url: null, // Will be set after Docker container creation
-      agent_url: null, // Will be set after Docker container creation
-      public_ip: 'cloudflare-workers-ip',
-      chrome_version: null,
-      node_version: null,
-      created_at: new Date().toISOString(),
-      last_activity: null,
-      metadata: JSON.stringify({ instanceType, server_id })
-    };
-
-    // Insert VM into database
-    await new Promise((resolve, reject) => {
-      db.run(
-        'INSERT INTO vms (id, name, status, novnc_url, agent_url, public_ip, chrome_version, node_version, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [vm.id, vm.name, vm.status, vm.novnc_url, vm.agent_url, vm.public_ip, vm.chrome_version, vm.node_version, vm.created_at, vm.metadata],
-        function(err) {
-          if (err) reject(err);
-          else resolve(this.lastID);
-        }
-      );
-    });
-
-        // Create real VM asynchronously
-        setImmediate(async () => {
-          try {
-            logger.info(`Creating real VM ${vmId}...`);
-            
-            // Use appropriate VM service based on server ID
-            let cloudResult;
-            if (server_id === 'default-google-cloud-server') {
-              cloudResult = await googleCloudVMService.createVM(vmId, name, server_id, instanceType);
-            } else if (server_id === 'default-railway-server') {
-              cloudResult = await railwayVMService.createVM(vmId, name, server_id, instanceType);
-            } else {
-              // Default to Cloudflare Workers for other servers
-              cloudResult = await realVMService.createVM(vmId, name, server_id, instanceType);
-            }
-            
-            // Update VM with real URLs and status
-            const updatedVM = {
-              ...vm,
-              status: cloudResult.status,
-              novnc_url: cloudResult.novncUrl,
-              agent_url: cloudResult.agentUrl,
-              public_ip: cloudResult.publicIp,
-              chrome_version: '120.0.0.0',
-              node_version: '18.19.0',
-              last_activity: new Date().toISOString()
-            };
-
-            await new Promise((resolve, reject) => {
-              db.run(
-                'UPDATE vms SET status = ?, novnc_url = ?, agent_url = ?, public_ip = ?, chrome_version = ?, node_version = ?, last_activity = ? WHERE id = ?',
-                [updatedVM.status, updatedVM.novnc_url, updatedVM.agent_url, updatedVM.public_ip, updatedVM.chrome_version, updatedVM.node_version, updatedVM.last_activity, vmId],
-                function(err) {
-                  if (err) reject(err);
-                  else resolve();
-                }
-              );
-            });
-
-            logger.info(`✅ VM ${vmId} created successfully on Cloudflare Workers (${cloudResult.serverName})`);
-          } catch (error) {
-            logger.error(`Error creating Cloudflare Workers VM ${vmId}:`, error);
-            
-            // Mark VM as error
-            await new Promise((resolve, reject) => {
-              db.run(
-                'UPDATE vms SET status = ? WHERE id = ?',
-                ['error', vmId],
-                function(err) {
-                  if (err) reject(err);
-                  else resolve();
-                }
-              );
-            });
-          }
-        });
-
-    res.status(201).json(vm);
+    logger.info('Creating VM via Cloudflare Workers:', req.body);
+    const response = await axios.post(`${CLOUDFLARE_WORKERS_URL}/vms`, req.body);
+    res.status(201).json(response.data);
   } catch (error) {
-    logger.error('Error creating VM:', error);
+    logger.error('Error creating VM via Cloudflare Workers:', error);
     res.status(500).json({ error: 'Failed to create VM' });
   }
 });
 
-// Update VM
-router.put('/:id', async (req, res) => {
+// Get VM by ID - proxy to Cloudflare Workers
+router.get('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { error, value } = updateVMSchema.validate(req.body);
-    
-    if (error) {
-      return res.status(400).json({ error: error.details[0].message });
-    }
-
-    const updateFields = [];
-    const updateValues = [];
-
-    Object.keys(value).forEach(key => {
-      updateFields.push(`${key} = ?`);
-      updateValues.push(value[key]);
-    });
-
-    if (updateFields.length === 0) {
-      return res.status(400).json({ error: 'No fields to update' });
-    }
-
-    updateValues.push(id);
-
-    await new Promise((resolve, reject) => {
-      db.run(
-        `UPDATE vms SET ${updateFields.join(', ')}, last_activity = ? WHERE id = ?`,
-        [...updateValues, new Date().toISOString()],
-        function(err) {
-          if (err) reject(err);
-          else if (this.changes === 0) reject(new Error('VM not found'));
-          else resolve();
-        }
-      );
-    });
-
-    // Fetch updated VM
-    const vm = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM vms WHERE id = ?', [id], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    res.json(vm);
+    logger.info(`Fetching VM ${req.params.id} from Cloudflare Workers`);
+    const response = await axios.get(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}`);
+    res.json(response.data);
   } catch (error) {
-    if (error.message === 'VM not found') {
-      return res.status(404).json({ error: 'VM not found' });
-    }
-    logger.error('Error updating VM:', error);
-    res.status(500).json({ error: 'Failed to update VM' });
+    logger.error(`Error fetching VM ${req.params.id} from Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to fetch VM' });
   }
 });
 
-// Delete VM
+// Delete VM - proxy to Cloudflare Workers
 router.delete('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-
-    // Check if VM exists
-    const vm = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM vms WHERE id = ?', [id], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    if (!vm) {
-      return res.status(404).json({ error: 'VM not found' });
-    }
-
-    // In a real implementation, this would trigger VM termination
-    // For now, we'll just delete from database
-    await new Promise((resolve, reject) => {
-      db.run('DELETE FROM vms WHERE id = ?', [id], function(err) {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
-    // Also delete related script jobs
-    await new Promise((resolve, reject) => {
-      db.run('DELETE FROM script_jobs WHERE vm_id = ?', [id], function(err) {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-
-    res.json({ message: 'VM deleted successfully' });
+    logger.info(`Deleting VM ${req.params.id} via Cloudflare Workers`);
+    const response = await axios.delete(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}`);
+    res.json(response.data);
   } catch (error) {
-    logger.error('Error deleting VM:', error);
+    logger.error(`Error deleting VM ${req.params.id} via Cloudflare Workers:`, error);
     res.status(500).json({ error: 'Failed to delete VM' });
   }
 });
 
-// Register VM (called by VM when it starts up)
-router.post('/register', async (req, res) => {
+// VM Management - proxy to Cloudflare Workers
+router.post('/:id/start', async (req, res) => {
   try {
-    const { vm_id, novnc_url, agent_url, status, public_ip } = req.body;
-
-    if (!vm_id || !novnc_url || !agent_url) {
-      return res.status(400).json({ error: 'vm_id, novnc_url, and agent_url are required' });
-    }
-
-    // Check if VM exists
-    const existingVM = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM vms WHERE id = ?', [vm_id], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    if (existingVM) {
-      // Update existing VM
-      await new Promise((resolve, reject) => {
-        db.run(
-          'UPDATE vms SET novnc_url = ?, agent_url = ?, status = ?, public_ip = ?, last_activity = ? WHERE id = ?',
-          [novnc_url, agent_url, status || 'ready', public_ip, new Date().toISOString(), vm_id],
-          function(err) {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
-    } else {
-      // Create new VM record
-      await new Promise((resolve, reject) => {
-        db.run(
-          'INSERT INTO vms (id, name, status, novnc_url, agent_url, public_ip, created_at, last_activity) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [vm_id, `VM-${vm_id}`, status || 'ready', novnc_url, agent_url, public_ip, new Date().toISOString(), new Date().toISOString()],
-          function(err) {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
-    }
-
-    res.json({ message: 'VM registered successfully' });
+    logger.info(`Starting VM ${req.params.id} via Cloudflare Workers`);
+    const response = await axios.post(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/start`);
+    res.json(response.data);
   } catch (error) {
-    logger.error('Error registering VM:', error);
-    res.status(500).json({ error: 'Failed to register VM' });
+    logger.error(`Error starting VM ${req.params.id} via Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to start VM' });
   }
 });
 
-// Run script on VM
-router.post('/:id/run-script', async (req, res) => {
+router.post('/:id/stop', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { script, screenshot, selector, wait_time } = req.body;
-
-    if (!script) {
-      return res.status(400).json({ error: 'Script is required' });
-    }
-
-    // Get VM details
-    const vm = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM vms WHERE id = ?', [id], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    if (!vm) {
-      return res.status(404).json({ error: 'VM not found' });
-    }
-
-    if (vm.status !== 'ready') {
-      return res.status(400).json({ error: 'VM is not ready' });
-    }
-
-    // Create script job
-    const jobId = uuidv4();
-    await new Promise((resolve, reject) => {
-      db.run(
-        'INSERT INTO script_jobs (id, vm_id, script, status, created_at) VALUES (?, ?, ?, ?, ?)',
-        [jobId, id, script, 'pending', new Date().toISOString()],
-        function(err) {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
-
-    // Update VM status
-    await new Promise((resolve, reject) => {
-      db.run(
-        'UPDATE vms SET status = ?, last_activity = ? WHERE id = ?',
-        ['running', new Date().toISOString(), id],
-        function(err) {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
-
-    // Execute script on cloud VM
-    try {
-      const result = await cloudVMService.executeScript(id, script, screenshot || false);
-
-      // Update script job with result
-      await new Promise((resolve, reject) => {
-        db.run(
-          'UPDATE script_jobs SET status = ?, result = ?, screenshot_path = ?, selected_text = ?, completed_at = ? WHERE id = ?',
-          ['completed', JSON.stringify(result.result), result.screenshot, result.selected_text, new Date().toISOString(), jobId],
-          function(err) {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
-
-      // Update VM status back to ready
-      await new Promise((resolve, reject) => {
-        db.run(
-          'UPDATE vms SET status = ?, last_activity = ? WHERE id = ?',
-          ['ready', new Date().toISOString(), id],
-          function(err) {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
-
-      res.json(result);
-    } catch (error) {
-      // Update script job with error
-      await new Promise((resolve, reject) => {
-        db.run(
-          'UPDATE script_jobs SET status = ?, error = ?, completed_at = ? WHERE id = ?',
-          ['failed', error.message, new Date().toISOString(), jobId],
-          function(err) {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
-
-      // Update VM status back to ready
-      await new Promise((resolve, reject) => {
-        db.run(
-          'UPDATE vms SET status = ?, last_activity = ? WHERE id = ?',
-          ['ready', new Date().toISOString(), id],
-          function(err) {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
-
-      logger.error('Script execution error:', error);
-      res.status(500).json({ error: 'Script execution failed', details: error.message });
-    }
+    logger.info(`Stopping VM ${req.params.id} via Cloudflare Workers`);
+    const response = await axios.post(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/stop`);
+    res.json(response.data);
   } catch (error) {
-    logger.error('Error running script:', error);
-    res.status(500).json({ error: 'Failed to run script' });
+    logger.error(`Error stopping VM ${req.params.id} via Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to stop VM' });
   }
 });
 
-// Get VM script jobs
-router.get('/:id/jobs', async (req, res) => {
+router.post('/:id/restart', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { limit = 50, offset = 0 } = req.query;
-
-    const jobs = await new Promise((resolve, reject) => {
-      db.all(
-        'SELECT * FROM script_jobs WHERE vm_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?',
-        [id, parseInt(limit), parseInt(offset)],
-        (err, rows) => {
-          if (err) reject(err);
-          else resolve(rows);
-        }
-      );
-    });
-
-    res.json(jobs);
+    logger.info(`Restarting VM ${req.params.id} via Cloudflare Workers`);
+    const response = await axios.post(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/restart`);
+    res.json(response.data);
   } catch (error) {
-    logger.error('Error fetching VM jobs:', error);
-    res.status(500).json({ error: 'Failed to fetch VM jobs' });
+    logger.error(`Error restarting VM ${req.params.id} via Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to restart VM' });
   }
 });
 
-// Get VM logs
+router.get('/:id/status', async (req, res) => {
+  try {
+    logger.info(`Getting status for VM ${req.params.id} from Cloudflare Workers`);
+    const response = await axios.get(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/status`);
+    res.json(response.data);
+  } catch (error) {
+    logger.error(`Error getting status for VM ${req.params.id} from Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to get VM status' });
+  }
+});
+
+// Script Execution - proxy to Cloudflare Workers
+router.post('/:id/scripts', async (req, res) => {
+  try {
+    logger.info(`Executing script on VM ${req.params.id} via Cloudflare Workers`);
+    const response = await axios.post(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/scripts`, req.body);
+    res.json(response.data);
+  } catch (error) {
+    logger.error(`Error executing script on VM ${req.params.id} via Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to execute script' });
+  }
+});
+
+router.get('/:id/scripts', async (req, res) => {
+  try {
+    logger.info(`Fetching scripts for VM ${req.params.id} from Cloudflare Workers`);
+    const response = await axios.get(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/scripts`);
+    res.json(response.data);
+  } catch (error) {
+    logger.error(`Error fetching scripts for VM ${req.params.id} from Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to fetch scripts' });
+  }
+});
+
+// Metrics and Monitoring - proxy to Cloudflare Workers
+router.get('/:id/metrics', async (req, res) => {
+  try {
+    logger.info(`Fetching metrics for VM ${req.params.id} from Cloudflare Workers`);
+    const response = await axios.get(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/metrics`);
+    res.json(response.data);
+  } catch (error) {
+    logger.error(`Error fetching metrics for VM ${req.params.id} from Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to fetch metrics' });
+  }
+});
+
+router.post('/:id/metrics', async (req, res) => {
+  try {
+    logger.info(`Recording metrics for VM ${req.params.id} via Cloudflare Workers`);
+    const response = await axios.post(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/metrics`, req.body);
+    res.json(response.data);
+  } catch (error) {
+    logger.error(`Error recording metrics for VM ${req.params.id} via Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to record metrics' });
+  }
+});
+
+// Events and Logs - proxy to Cloudflare Workers
+router.get('/:id/events', async (req, res) => {
+  try {
+    logger.info(`Fetching events for VM ${req.params.id} from Cloudflare Workers`);
+    const response = await axios.get(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/events`);
+    res.json(response.data);
+  } catch (error) {
+    logger.error(`Error fetching events for VM ${req.params.id} from Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to fetch events' });
+  }
+});
+
 router.get('/:id/logs', async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    // Get VM info
-    const vm = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM vms WHERE id = ?', [id], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    if (!vm) {
-      return res.status(404).json({ error: 'VM not found' });
-    }
-
-    // For now, return sample logs
-    // In a real implementation, you'd fetch from Docker logs or a log service
-    const logs = [
-      {
-        timestamp: new Date().toISOString(),
-        level: 'info',
-        message: `VM ${vm.name} is running`,
-        service: 'chrome-vm-backend'
-      },
-      {
-        timestamp: new Date(Date.now() - 1000).toISOString(),
-        level: 'info',
-        message: 'Chrome browser initialized successfully',
-        service: 'chrome-agent'
-      },
-      {
-        timestamp: new Date(Date.now() - 2000).toISOString(),
-        level: 'info',
-        message: 'NoVNC server started on port 6080',
-        service: 'novnc'
-      }
-    ];
-
-    res.json({ logs });
+    logger.info(`Fetching logs for VM ${req.params.id} from Cloudflare Workers`);
+    const response = await axios.get(`${CLOUDFLARE_WORKERS_URL}/vms/${req.params.id}/logs`);
+    res.json(response.data);
   } catch (error) {
-    logger.error('Error fetching VM logs:', error);
-    res.status(500).json({ error: 'Failed to fetch VM logs' });
+    logger.error(`Error fetching logs for VM ${req.params.id} from Cloudflare Workers:`, error);
+    res.status(500).json({ error: 'Failed to fetch logs' });
   }
 });
 
